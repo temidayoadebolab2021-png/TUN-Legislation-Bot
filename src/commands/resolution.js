@@ -6,7 +6,7 @@
 const { SlashCommandBuilder, EmbedBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 const { getConfig } = require('../lib/config');
 const { isAdmin } = require('../lib/permissions');
-const { getAllResolutions, findResolution, findTemplate, deleteResolution, clearAllResolutions, EDITABLE_STATUSES, SELF_DELETABLE_STATUSES } = require('../lib/resolutions');
+const { getAllResolutions, findResolution, findTemplate, upsertResolution, deleteResolution, clearAllResolutions, EDITABLE_STATUSES, SELF_DELETABLE_STATUSES } = require('../lib/resolutions');
 const { resolutionEmbed } = require('../lib/embeds');
 const { logAudit } = require('../lib/audit');
 
@@ -53,6 +53,21 @@ module.exports = {
         .setName('delete')
         .setDescription('Delete your own resolution (only before it has been approved into debate)')
         .addStringOption((o) => o.setName('number').setDescription('Resolution number').setRequired(true).setAutocomplete(true))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('attach')
+        .setDescription('Attach an image or document to a resolution')
+        .addStringOption((o) => o.setName('number').setDescription('Resolution number').setRequired(true).setAutocomplete(true))
+        .addAttachmentOption((o) => o.setName('file').setDescription('The image or document to attach').setRequired(true))
+        .addStringOption((o) => o.setName('description').setDescription('Optional caption/description for this attachment').setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove-attachment')
+        .setDescription('Remove an attachment from a resolution')
+        .addStringOption((o) => o.setName('number').setDescription('Resolution number').setRequired(true).setAutocomplete(true))
+        .addIntegerOption((o) => o.setName('index').setDescription('Attachment number as shown in /resolution view (1, 2, 3...)').setRequired(true))
     )
     .addSubcommand((sub) =>
       sub
@@ -158,6 +173,85 @@ module.exports = {
       deleteResolution(number);
       logAudit(interaction.client, 'Resolution Deleted', `**${number}** — ${resolution.title} deleted by its proposer (${interaction.user.tag}).`, resolution.body).catch((err) => console.error(err));
       return interaction.reply({ content: `🗑️ **${number}** has been deleted.`, ephemeral: true });
+    }
+
+    if (sub === 'attach') {
+      const number = interaction.options.getString('number');
+      const resolution = findResolution(number);
+      if (!resolution) {
+        return interaction.reply({ content: `❌ No resolution found with number **${number}**.`, ephemeral: true });
+      }
+      const canAttach = isAdmin(interaction.member, config) || resolution.submittedBy === interaction.user.id;
+      if (!canAttach) {
+        return interaction.reply({ content: '❌ Only the proposer or an admin can attach files to this resolution.', ephemeral: true });
+      }
+
+      const file = interaction.options.getAttachment('file');
+      const description = interaction.options.getString('description');
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        // Re-post the file into the channel the command was run in (e.g.
+        // the resolution's debate thread) so we get a permanent Discord CDN
+        // URL to keep long-term, rather than relying on the interaction's
+        // own attachment URL.
+        const message = await interaction.channel.send({
+          content: `📎 Attachment for **${resolution.number}**${description ? `: ${description}` : ''} (uploaded by ${interaction.user.tag})`,
+          files: [{ attachment: file.url, name: file.name }],
+        });
+        const posted = message.attachments.first();
+
+        resolution.attachments = resolution.attachments || [];
+        resolution.attachments.push({
+          url: posted.url,
+          filename: posted.name,
+          contentType: posted.contentType || null,
+          size: posted.size,
+          uploadedBy: interaction.user.id,
+          uploadedByTag: interaction.user.tag,
+          uploadedAt: Date.now(),
+          description: description || null,
+          messageUrl: message.url,
+        });
+        upsertResolution(resolution);
+
+        logAudit(interaction.client, 'Attachment Added', `**${resolution.number}** — ${posted.name} attached by ${interaction.user.tag}.`, resolution.body).catch((err) => console.error(err));
+
+        return interaction.editReply({
+          content: `✅ Attached **${posted.name}** to **${resolution.number}** (attachment #${resolution.attachments.length}).`,
+          embeds: [resolutionEmbed(resolution)],
+        });
+      } catch (err) {
+        console.error('Failed to attach file to resolution:', err);
+        return interaction.editReply({ content: "❌ Couldn't attach that file - make sure the bot can send messages and attachments in this channel." });
+      }
+    }
+
+    if (sub === 'remove-attachment') {
+      const number = interaction.options.getString('number');
+      const resolution = findResolution(number);
+      if (!resolution) {
+        return interaction.reply({ content: `❌ No resolution found with number **${number}**.`, ephemeral: true });
+      }
+      const canRemove = isAdmin(interaction.member, config) || resolution.submittedBy === interaction.user.id;
+      if (!canRemove) {
+        return interaction.reply({ content: '❌ Only the proposer or an admin can remove attachments from this resolution.', ephemeral: true });
+      }
+
+      const index = interaction.options.getInteger('index');
+      const attachments = resolution.attachments || [];
+      if (index < 1 || index > attachments.length) {
+        return interaction.reply({ content: `❌ **${number}** doesn't have an attachment #${index}. Use \`/resolution view\` to see the current list.`, ephemeral: true });
+      }
+
+      const [removed] = attachments.splice(index - 1, 1);
+      resolution.attachments = attachments;
+      upsertResolution(resolution);
+
+      logAudit(interaction.client, 'Attachment Removed', `**${resolution.number}** — ${removed.filename} removed by ${interaction.user.tag}.`, resolution.body).catch((err) => console.error(err));
+
+      return interaction.reply({ content: `🗑️ Removed attachment **${removed.filename}** from **${resolution.number}**.`, ephemeral: true });
     }
 
     if (sub === 'admin-delete') {

@@ -128,7 +128,8 @@ module.exports = {
               { name: 'Amendment Quorum %', value: 'amendments.quorumPercent' },
               { name: 'Amendment Majority %', value: 'amendments.majorityPercent' },
               { name: 'Amendment Debate duration (minutes)', value: 'amendments.debateDurationMinutes' },
-              { name: 'Amendment Voting duration (minutes)', value: 'amendments.votingDurationMinutes' }
+              { name: 'Amendment Voting duration (minutes)', value: 'amendments.votingDurationMinutes' },
+              { name: 'Voting Reminder Interval (hours)', value: 'reminders.intervalHours' }
             )
         )
         .addNumberOption((opt) => opt.setName('value').setDescription('New numeric value').setRequired(true))
@@ -173,6 +174,7 @@ module.exports = {
               { name: 'Allow Veto Override', value: 'securityCouncil.veto.allowOverride' },
               { name: 'Amendments Enabled', value: 'amendments.enabled' },
               { name: 'Announcement Mentions Enabled', value: 'announcements.mentionsEnabled' },
+              { name: 'Voting Reminders Enabled (DMs non-voters on open votes)', value: 'reminders.enabled' },
               { name: 'Election Vote Changes Allowed', value: 'elections.allowVoteChanges' },
               { name: 'Election Live Results', value: 'elections.liveResults' },
               { name: 'Election Runoff Enabled', value: 'elections.runoffEnabled' },

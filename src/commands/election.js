@@ -42,6 +42,12 @@ module.exports = {
         .addStringOption((o) => o.setName('title').setDescription('e.g. Secretary-General Election').setRequired(true))
         .addStringOption((o) => o.setName('type').setDescription('Type of election').setRequired(true).addChoices(...ELECTION_TYPE_CHOICES))
         .addStringOption((o) => o.setName('description').setDescription('What is this election about?').setRequired(false))
+        .addStringOption((o) =>
+          o
+            .setName('options')
+            .setDescription('Referendum only: comma-separated custom choices (e.g. "Soundtrack A,Soundtrack B"). Default: Yes/No.')
+            .setRequired(false)
+        )
         .addIntegerOption((o) => o.setName('registration_days').setDescription('How many days to accept candidates (ignored for Referendum/Recall/Confidence)').setRequired(false))
         .addIntegerOption((o) => o.setName('campaign_days').setDescription('How many days for campaigning before voting opens').setRequired(false))
         .addIntegerOption((o) => o.setName('voting_days').setDescription('How many days voting stays open').setRequired(false))
@@ -157,6 +163,7 @@ module.exports = {
       const requireAdminApprovalOpt = interaction.options.getBoolean('require_admin_approval');
       const requireAdminApproval = requireAdminApprovalOpt === null ? config.elections.eligibility.requireAdminApproval : requireAdminApprovalOpt;
       const sanctionRole = interaction.options.getRole('sanction_role');
+      const options = interaction.options.getString('options');
 
       const election = createElection(interaction.client, {
         title,
@@ -171,7 +178,16 @@ module.exports = {
         minMembershipDays,
         requireAdminApproval,
         sanctionRoleId: sanctionRole ? sanctionRole.id : (config.elections.eligibility.sanctionRole[0] || null),
+        options,
       });
+
+      // Referendum-style elections skip straight to Voting, with no
+      // registration/campaign to wait through - so the voting card needs
+      // to be posted immediately, rather than waiting for the scheduler or
+      // an admin to open it later.
+      if (election.status === 'Voting') {
+        await openElectionVoting(interaction.client, election);
+      }
 
       await interaction.reply({ embeds: [electionEmbed(election, config)], ephemeral: false });
 

@@ -95,6 +95,7 @@ function buildGeneralAssemblyEmbed(config) {
           `Live Results During Vote: ${toggle(config.liveResultsDuringVote)}`,
           `DM Notifications to Proposer: ${toggle(config.dmNotifications)}`,
           `Max Active Resolutions Per Member: ${config.maxActiveResolutionsPerMember > 0 ? config.maxActiveResolutionsPerMember : '*Unlimited*'}`,
+          `Voting Reminders: ${toggle(config.reminders.enabled)}${config.reminders.enabled ? ` (every ${config.reminders.intervalHours}h)` : ''}`,
         ].join('\n'),
         inline: false,
       }

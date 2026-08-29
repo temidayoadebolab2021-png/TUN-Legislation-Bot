@@ -173,6 +173,23 @@ function resolutionEmbed(resolution) {
     embed.addFields({ name: 'AMENDMENT HISTORY', value: lines.join('\n').slice(0, 1024), inline: false });
   }
 
+  // Attached images/documents, if any. The first image (if there is one)
+  // gets shown as a large inline preview; everything else is listed as a
+  // clickable link, image or not.
+  if (resolution.attachments && resolution.attachments.length) {
+    embed.addFields({ name: BLANK, value: DIVIDER, inline: false });
+    const firstImage = resolution.attachments.find((a) => (a.contentType || '').startsWith('image/'));
+    if (firstImage) embed.setImage(firstImage.url);
+
+    const lines = resolution.attachments.map((a, i) => {
+      const isImage = (a.contentType || '').startsWith('image/');
+      const icon = isImage ? '🖼️' : '📄';
+      const desc = a.description ? ` — ${a.description}` : '';
+      return `${icon} **${i + 1}.** [${a.filename}](${a.url})${desc} — *by ${a.uploadedByTag}*`;
+    });
+    embed.addFields({ name: `ATTACHMENTS (${resolution.attachments.length})`, value: lines.join('\n').slice(0, 1024), inline: false });
+  }
+
   return embed;
 }
 

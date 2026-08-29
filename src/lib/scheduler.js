@@ -10,6 +10,7 @@ const { openVoting, closeVoting, closeOverrideVote } = require('./voting');
 const { openAmendmentVote, closeAmendmentVote, hasOpenAmendments } = require('./amendments');
 const { getAllElections } = require('./electionsData');
 const { openCampaign, openElectionVoting, closeElectionVoting } = require('./elections');
+const { runReminders } = require('./reminders');
 
 function startScheduler(client) {
   setInterval(async () => {
@@ -72,6 +73,11 @@ function startScheduler(client) {
           await closeElectionVoting(client, election);
         }
       }
+
+      // DM reminders to anyone who hasn't voted yet on something still
+      // open - each reminder function internally checks its own interval,
+      // so this is cheap to call every tick.
+      await runReminders(client);
     } catch (err) {
       console.error('Scheduler error:', err);
     }

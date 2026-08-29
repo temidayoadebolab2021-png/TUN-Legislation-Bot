@@ -38,12 +38,19 @@ function nextCandidateId(election) {
 
 // --- Creation -----------------------------------------------------------
 
-function createElection(client, { title, type, description, createdBy, createdByTag, registrationDays, campaignDays, votingDays, requiredRole, minMembershipDays, requireAdminApproval, sanctionRoleId }) {
+function createElection(client, { title, type, description, createdBy, createdByTag, registrationDays, campaignDays, votingDays, requiredRole, minMembershipDays, requireAdminApproval, sanctionRoleId, options }) {
   const config = getConfig();
   const now = Date.now();
+  const referendum = isReferendumType(type);
 
-  const registrationClosesAt = now + registrationDays * 86400000;
-  const campaignEndsAt = registrationClosesAt + campaignDays * 86400000;
+  // Referendum-style elections never need registration or a campaign
+  // period - there's nobody to register, and (per how alliances actually
+  // use these) no need to wait around before voting can start.
+  const effectiveRegistrationDays = referendum ? 0 : registrationDays;
+  const effectiveCampaignDays = referendum ? 0 : campaignDays;
+
+  const registrationClosesAt = now + effectiveRegistrationDays * 86400000;
+  const campaignEndsAt = registrationClosesAt + effectiveCampaignDays * 86400000;
   const votingEndsAt = campaignEndsAt + votingDays * 86400000;
 
   const election = {
@@ -77,16 +84,35 @@ function createElection(client, { title, type, description, createdBy, createdBy
     archivedAt: null,
   };
 
-  // Referendum-style elections don't have real candidates to register -
-  // "Yes" and "No" are pre-approved as soon as the election is created,
-  // and there's no registration phase to wait through.
-  if (isReferendumType(type)) {
-    election.candidates.push(
-      { id: 'C1', userId: null, label: 'Yes', tag: null, status: 'Approved', registeredAt: now, nominatedBy: null },
-      { id: 'C2', userId: null, label: 'No', tag: null, status: 'Approved', registeredAt: now, nominatedBy: null }
-    );
+  if (referendum) {
+    // A plain Referendum can use custom options (e.g. "Soundtrack A,
+    // Soundtrack B, Soundtrack C") instead of Yes/No - Recall Vote and
+    // Confidence Vote stay fixed to Yes/No, since those are inherently
+    // binary decisions.
+    let optionLabels = ['Yes', 'No'];
+    if (type === 'Referendum' && options) {
+      const custom = options
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean)
+        .slice(0, 24); // leave room for the automatic Abstain option in the vote menu
+      if (custom.length >= 2) optionLabels = custom;
+    }
+
+    election.candidates = optionLabels.map((label, i) => ({
+      id: `C${i + 1}`,
+      userId: null,
+      label,
+      tag: null,
+      status: 'Approved',
+      registeredAt: now,
+      nominatedBy: null,
+    }));
+
+    // No registration or campaign to wait through - go straight to voting.
     election.schedule.registrationClosesAt = now;
-    election.status = campaignDays > 0 ? 'Campaign' : 'Voting';
+    election.schedule.campaignEndsAt = now;
+    election.status = 'Voting';
   }
 
   upsertElection(election);

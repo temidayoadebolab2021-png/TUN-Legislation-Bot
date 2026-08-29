@@ -41,6 +41,10 @@ function getDefaultConfig() {
       ga: { mentionType: 'none', roleId: '' },
       sc: { mentionType: 'none', roleId: '' },
     },
+    reminders: {
+      enabled: true,
+      intervalHours: 24,
+    },
     amendments: {
       enabled: true,
       debateDurationMinutes: 360,

@@ -9,6 +9,7 @@ const { getConfig } = require('../lib/config');
 const { isAdmin } = require('../lib/permissions');
 const { findResolution } = require('../lib/resolutions');
 const { openVoting, closeVoting } = require('../lib/voting');
+const { hasOpenAmendments } = require('../lib/amendments');
 
 module.exports = {
   category: 'Legislation',
@@ -54,6 +55,9 @@ module.exports = {
     if (sub === 'start') {
       if (resolution.status !== 'Debate') {
         return interaction.editReply({ content: `❌ This resolution must be in Debate to start voting (status: ${resolution.status}).` });
+      }
+      if (hasOpenAmendments(resolution)) {
+        return interaction.editReply({ content: `❌ **${resolution.number}** still has amendments in Debate or Voting. Resolve those first with \`/amendment\` before opening the main vote.` });
       }
       await openVoting(interaction.client, resolution);
       return interaction.editReply({ content: `✅ Voting opened for **${resolution.number}**.` });
