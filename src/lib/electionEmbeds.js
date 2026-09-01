@@ -92,6 +92,23 @@ function electionEmbed(election, config) {
     embed.addFields({ name: 'RUNOFF ELECTION', value: election.runoffChildNumber, inline: true });
   }
 
+  // Attached images/documents, if any. The first image (if there is one)
+  // gets shown as a large inline preview; everything else is listed as a
+  // clickable link, image or not.
+  if (election.attachments && election.attachments.length) {
+    embed.addFields({ name: BLANK, value: DIVIDER, inline: false });
+    const firstImage = election.attachments.find((a) => (a.contentType || '').startsWith('image/'));
+    if (firstImage) embed.setImage(firstImage.url);
+
+    const lines = election.attachments.map((a, i) => {
+      const isImage = (a.contentType || '').startsWith('image/');
+      const icon = isImage ? '🖼️' : '📄';
+      const desc = a.description ? ` — ${a.description}` : '';
+      return `${icon} **${i + 1}.** [${a.filename}](${a.url})${desc} — *by ${a.uploadedByTag}*`;
+    });
+    embed.addFields({ name: `ATTACHMENTS (${election.attachments.length})`, value: lines.join('\n').slice(0, 1024), inline: false });
+  }
+
   return embed;
 }
 
@@ -131,6 +148,14 @@ function electionVotingEmbed(election, config) {
       value: '*Individual votes are never visible to anyone, including administrators. Only aggregate turnout is shown until the election closes.*',
       inline: false,
     });
+  }
+
+  // Show the first attached image (if any) right on the voting card itself
+  // - e.g. album art for a "pick our anthem" referendum - without cluttering
+  // the card with the full attachment list (see /election view for that).
+  if (election.attachments && election.attachments.length) {
+    const firstImage = election.attachments.find((a) => (a.contentType || '').startsWith('image/'));
+    if (firstImage) embed.setImage(firstImage.url);
   }
 
   return embed;
