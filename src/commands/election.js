@@ -92,6 +92,21 @@ module.exports = {
         .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
         .addStringOption((o) => o.setName('candidate_id').setDescription('Which tied candidate wins').setRequired(true).setAutocomplete(true))
     )
+    .addSubcommand((sub) =>
+      sub
+        .setName('attach')
+        .setDescription('Attach an image or document to an election')
+        .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
+        .addAttachmentOption((o) => o.setName('file').setDescription('The image or document to attach').setRequired(true))
+        .addStringOption((o) => o.setName('description').setDescription('Optional caption/description for this attachment').setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('remove-attachment')
+        .setDescription('Remove an attachment from an election')
+        .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
+        .addIntegerOption((o) => o.setName('index').setDescription('Attachment number as shown in /election view (1, 2, 3...)').setRequired(true))
+    )
     .addSubcommandGroup((group) =>
       group
         .setName('candidate')
@@ -275,6 +290,82 @@ module.exports = {
       await interaction.deferReply({ ephemeral: true });
       const updated = await declareWinner(interaction.client, election, candidateId);
       return interaction.editReply({ content: `✅ Winner declared for **${updated.number}**.` });
+    }
+
+    if (sub === 'attach') {
+      const election = findElection(interaction.options.getString('number'));
+      if (!election) {
+        return interaction.reply({ content: '❌ No election found with that number.', ephemeral: true });
+      }
+      const canAttach = isAdmin(interaction.member, config) || election.createdBy === interaction.user.id;
+      if (!canAttach) {
+        return interaction.reply({ content: '❌ Only whoever called this election or an admin can attach files to it.', ephemeral: true });
+      }
+
+      const file = interaction.options.getAttachment('file');
+      const description = interaction.options.getString('description');
+
+      await interaction.deferReply({ ephemeral: true });
+
+      try {
+        // Re-post the file into the channel the command was run in so we
+        // get a permanent Discord CDN URL to keep long-term, rather than
+        // relying on the interaction's own attachment URL.
+        const message = await interaction.channel.send({
+          content: `📎 Attachment for **${election.number}**${description ? `: ${description}` : ''} (uploaded by ${interaction.user.tag})`,
+          files: [{ attachment: file.url, name: file.name }],
+        });
+        const posted = message.attachments.first();
+
+        election.attachments = election.attachments || [];
+        election.attachments.push({
+          url: posted.url,
+          filename: posted.name,
+          contentType: posted.contentType || null,
+          size: posted.size,
+          uploadedBy: interaction.user.id,
+          uploadedByTag: interaction.user.tag,
+          uploadedAt: Date.now(),
+          description: description || null,
+          messageUrl: message.url,
+        });
+        upsertElection(election);
+
+        logAudit(interaction.client, 'Election Attachment Added', `**${election.number}** — ${posted.name} attached by ${interaction.user.tag}.`).catch((err) => console.error(err));
+
+        return interaction.editReply({
+          content: `✅ Attached **${posted.name}** to **${election.number}** (attachment #${election.attachments.length}).`,
+          embeds: [electionEmbed(election, config)],
+        });
+      } catch (err) {
+        console.error('Failed to attach file to election:', err);
+        return interaction.editReply({ content: "❌ Couldn't attach that file - make sure the bot can send messages and attachments in this channel." });
+      }
+    }
+
+    if (sub === 'remove-attachment') {
+      const election = findElection(interaction.options.getString('number'));
+      if (!election) {
+        return interaction.reply({ content: '❌ No election found with that number.', ephemeral: true });
+      }
+      const canRemove = isAdmin(interaction.member, config) || election.createdBy === interaction.user.id;
+      if (!canRemove) {
+        return interaction.reply({ content: '❌ Only whoever called this election or an admin can remove its attachments.', ephemeral: true });
+      }
+
+      const index = interaction.options.getInteger('index');
+      const attachments = election.attachments || [];
+      if (index < 1 || index > attachments.length) {
+        return interaction.reply({ content: `❌ **${election.number}** doesn't have an attachment #${index}. Use \`/election view\` to see the current list.`, ephemeral: true });
+      }
+
+      const [removed] = attachments.splice(index - 1, 1);
+      election.attachments = attachments;
+      upsertElection(election);
+
+      logAudit(interaction.client, 'Election Attachment Removed', `**${election.number}** — ${removed.filename} removed by ${interaction.user.tag}.`).catch((err) => console.error(err));
+
+      return interaction.reply({ content: `🗑️ Removed attachment **${removed.filename}** from **${election.number}**.`, ephemeral: true });
     }
   },
 };
