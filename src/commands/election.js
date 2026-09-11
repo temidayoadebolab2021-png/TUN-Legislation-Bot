@@ -16,10 +16,12 @@ const {
   createElection,
   registerCandidate,
   nominateCandidate,
+  setCandidateKnownAs,
   openElectionVoting,
   closeElectionVoting,
   declareWinner,
 } = require('../lib/elections');
+const { candidateLabel } = require('../lib/electionEmbeds');
 
 const ELECTION_TYPE_CHOICES = [
   { name: 'General Election', value: 'General Election' },
@@ -116,6 +118,12 @@ module.exports = {
             .setName('register')
             .setDescription('Register yourself as a candidate')
             .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
+            .addStringOption((o) =>
+              o
+                .setName('known_as')
+                .setDescription('Recognizable name to show in the voting dropdown instead of your Discord username (optional)')
+                .setRequired(false)
+            )
         )
         .addSubcommand((sub) =>
           sub
@@ -123,6 +131,20 @@ module.exports = {
             .setDescription('Nominate someone as a candidate (admin only)')
             .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
             .addUserOption((o) => o.setName('user').setDescription('Who to nominate').setRequired(true))
+            .addStringOption((o) =>
+              o
+                .setName('known_as')
+                .setDescription('Recognizable name to show in the voting dropdown instead of their Discord username (optional)')
+                .setRequired(false)
+            )
+        )
+        .addSubcommand((sub) =>
+          sub
+            .setName('known-as')
+            .setDescription('Set or change the recognizable name a candidate shows in the voting dropdown')
+            .addStringOption((o) => o.setName('number').setDescription('Election number').setRequired(true).setAutocomplete(true))
+            .addStringOption((o) => o.setName('candidate_id').setDescription('Candidate ID (leave blank to set your own)').setRequired(false).setAutocomplete(true))
+            .addStringOption((o) => o.setName('known_as').setDescription('The name to show, e.g. "Jane" or "Team Falcon". Leave blank to clear it.').setRequired(false))
         )
         .addSubcommand((sub) =>
           sub
@@ -382,14 +404,15 @@ async function handleCandidateSubcommand(interaction, config, sub) {
     if (election.status !== 'Registration') {
       return interaction.reply({ content: `❌ Candidate registration is not open for this election (status: ${election.status}).`, ephemeral: true });
     }
-    const result = registerCandidate(election, interaction.member);
+    const knownAs = interaction.options.getString('known_as');
+    const result = registerCandidate(election, interaction.member, knownAs);
     if (result.error) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });
 
     await interaction.reply({
-      content: `✅ You are registered as a candidate in **${election.number}**.${result.candidate.status === 'Pending' ? ' Your candidacy is pending admin approval.' : ''}`,
+      content: `✅ You are registered as a candidate in **${election.number}**${result.candidate.knownAs ? ` as **${result.candidate.knownAs}**` : ''}.${result.candidate.status === 'Pending' ? ' Your candidacy is pending admin approval.' : ''}${!result.candidate.knownAs ? ' Tip: you can set a recognizable name for the voting dropdown any time with `/election candidate known-as`.' : ''}`,
       ephemeral: true,
     });
-    logAudit(interaction.client, 'Candidate Registered', `${interaction.user.tag} registered for ${election.number}.`).catch((err) => console.error(err));
+    logAudit(interaction.client, 'Candidate Registered', `${interaction.user.tag} registered for ${election.number}${result.candidate.knownAs ? ` as "${result.candidate.knownAs}"` : ''}.`).catch((err) => console.error(err));
     return;
   }
 
@@ -407,12 +430,44 @@ async function handleCandidateSubcommand(interaction, config, sub) {
     const targetMember = await interaction.guild.members.fetch(targetUser.id).catch(() => null);
     if (!targetMember) return interaction.reply({ content: '❌ Could not find that member in this server.', ephemeral: true });
 
-    const result = nominateCandidate(election, targetMember, interaction.user.id);
+    const knownAs = interaction.options.getString('known_as');
+    const result = nominateCandidate(election, targetMember, interaction.user.id, knownAs);
     if (result.error) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });
 
-    await interaction.reply({ content: `✅ <@${targetUser.id}> has been nominated for **${election.number}** and is approved to run.` });
-    logAudit(interaction.client, 'Candidate Nominated', `${interaction.user.tag} nominated ${targetUser.tag} for ${election.number}.`).catch((err) => console.error(err));
-    dmUser(interaction.client, targetUser.id, `📋 You have been nominated as a candidate in **${election.number}** — ${election.title}.`);
+    await interaction.reply({ content: `✅ <@${targetUser.id}> has been nominated for **${election.number}**${result.candidate.knownAs ? ` as **${result.candidate.knownAs}**` : ''} and is approved to run.` });
+    logAudit(interaction.client, 'Candidate Nominated', `${interaction.user.tag} nominated ${targetUser.tag} for ${election.number}${result.candidate.knownAs ? ` as "${result.candidate.knownAs}"` : ''}.`).catch((err) => console.error(err));
+    dmUser(interaction.client, targetUser.id, `📋 You have been nominated as a candidate in **${election.number}** — ${election.title}.${result.candidate.knownAs ? '' : ' You can set a recognizable name for the voting dropdown with `/election candidate known-as`.'}`);
+    return;
+  }
+
+  if (sub === 'known-as') {
+    let candidateId = interaction.options.getString('candidate_id');
+    const knownAs = interaction.options.getString('known_as');
+
+    let candidate;
+    if (candidateId) {
+      candidate = election.candidates.find((c) => c.id === candidateId);
+      if (!candidate) return interaction.reply({ content: `❌ No candidate **${candidateId}** found.`, ephemeral: true });
+      const isSelf = candidate.userId === interaction.user.id;
+      if (!isSelf && !isAdmin(interaction.member, config)) {
+        return interaction.reply({ content: '❌ Only that candidate themself or an admin can change their "known as" name.', ephemeral: true });
+      }
+    } else {
+      candidate = election.candidates.find((c) => c.userId === interaction.user.id && c.status !== 'Withdrawn' && c.status !== 'Rejected');
+      if (!candidate) return interaction.reply({ content: `❌ You are not registered as a candidate in **${election.number}**. Provide \`candidate_id\` to set it for someone else (admin only).`, ephemeral: true });
+      candidateId = candidate.id;
+    }
+
+    const result = setCandidateKnownAs(election, candidateId, knownAs);
+    if (result.error) return interaction.reply({ content: `❌ ${result.error}`, ephemeral: true });
+
+    await interaction.reply({
+      content: result.candidate.knownAs
+        ? `✅ ${candidateLabel(result.candidate)} will now show as **${result.candidate.knownAs}** in the voting dropdown.`
+        : `✅ ${candidateLabel(result.candidate)}'s "known as" name has been cleared - the voting dropdown will show their Discord username instead.`,
+      ephemeral: true,
+    });
+    logAudit(interaction.client, 'Candidate Known-As Updated', `${interaction.user.tag} set ${result.candidate.tag}'s known-as to ${result.candidate.knownAs ? `"${result.candidate.knownAs}"` : '(cleared)'} in ${election.number}.`).catch((err) => console.error(err));
     return;
   }
 
@@ -468,7 +523,11 @@ async function handleCandidateSubcommand(interaction, config, sub) {
     if (election.candidates.length === 0) {
       return interaction.reply({ content: `**${election.number}** has no candidates yet.`, ephemeral: true });
     }
-    const lines = election.candidates.map((c) => `**${c.id}** — ${c.tag || c.label} — **${c.status}**`);
+    // Always shows the real @mention (never just the plain username) plus
+    // whatever "known as" name the candidate registered with, if any - so
+    // it's always possible to match the ballot's dropdown name to the
+    // actual member behind it.
+    const lines = election.candidates.map((c) => `**${c.id}** — ${candidateLabel(c)} — **${c.status}**`);
     return interaction.reply({ content: lines.join('\n').slice(0, 4000) });
   }
 }

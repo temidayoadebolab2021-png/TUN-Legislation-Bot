@@ -138,7 +138,18 @@ function checkEligibility(election, member) {
   return null;
 }
 
-function registerCandidate(election, member) {
+// A candidate's registered Discord username is often not how members
+// actually recognize them (nicknames, IRL names, alliance handles). Up to
+// 100 characters to match Discord's select-menu option label limit.
+const MAX_KNOWN_AS_LENGTH = 100;
+
+function normalizeKnownAs(knownAs) {
+  if (!knownAs) return null;
+  const trimmed = knownAs.trim();
+  return trimmed ? trimmed.slice(0, MAX_KNOWN_AS_LENGTH) : null;
+}
+
+function registerCandidate(election, member, knownAs) {
   if (election.candidates.some((c) => c.userId === member.id && c.status !== 'Withdrawn' && c.status !== 'Rejected')) {
     return { error: 'You are already registered as a candidate in this election.' };
   }
@@ -150,6 +161,7 @@ function registerCandidate(election, member) {
     userId: member.id,
     label: null,
     tag: member.user.tag,
+    knownAs: normalizeKnownAs(knownAs),
     status: election.eligibility.requireAdminApproval ? 'Pending' : 'Approved',
     registeredAt: Date.now(),
     nominatedBy: null,
@@ -159,7 +171,7 @@ function registerCandidate(election, member) {
   return { candidate };
 }
 
-function nominateCandidate(election, targetMember, nominatorId) {
+function nominateCandidate(election, targetMember, nominatorId, knownAs) {
   if (election.candidates.some((c) => c.userId === targetMember.id && c.status !== 'Withdrawn' && c.status !== 'Rejected')) {
     return { error: 'That member is already registered as a candidate in this election.' };
   }
@@ -168,11 +180,28 @@ function nominateCandidate(election, targetMember, nominatorId) {
     userId: targetMember.id,
     label: null,
     tag: targetMember.user.tag,
+    knownAs: normalizeKnownAs(knownAs),
     status: 'Approved', // An admin nomination is itself the approval.
     registeredAt: Date.now(),
     nominatedBy: nominatorId,
   };
   election.candidates.push(candidate);
+  upsertElection(election);
+  return { candidate };
+}
+
+// Lets a candidate register or change the recognizable name shown in the
+// voting dropdown (see electionEmbeds.js's candidateName()) - either at
+// registration time, or any time after, right up until voting closes.
+// Admins can set this on behalf of any candidate (e.g. one they nominated).
+function setCandidateKnownAs(election, candidateId, knownAs) {
+  const candidate = election.candidates.find((c) => c.id === candidateId);
+  if (!candidate) return { error: 'No candidate found with that ID.' };
+  if (!candidate.userId) return { error: 'This option/candidate is not tied to a member and cannot have a "known as" name.' };
+  if (election.status === 'Certified' || election.status === 'Cancelled') {
+    return { error: `This election has already ended (status: ${election.status}).` };
+  }
+  candidate.knownAs = normalizeKnownAs(knownAs);
   upsertElection(election);
   return { candidate };
 }
@@ -466,6 +495,7 @@ module.exports = {
   checkEligibility,
   registerCandidate,
   nominateCandidate,
+  setCandidateKnownAs,
   getElectionEligibleCount,
   isEligibleElectionVoter,
   openCampaign,

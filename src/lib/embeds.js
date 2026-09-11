@@ -140,7 +140,7 @@ function resolutionEmbed(resolution) {
         let value = `${icon} **${(track.result || '').toUpperCase()}**`;
         if (track.tally) {
           value += showBreakdown
-            ? `\nWeighted Yes **${track.tally.weightedYes}**  ·  Weighted No **${track.tally.weightedNo}**  ·  Participation **${track.tally.participation.toFixed(1)}%**`
+            ? `\nFor **${track.tally.weightedYes}** (${track.tally.forPercent.toFixed(1)}%)  ·  Against **${track.tally.weightedNo}** (${track.tally.againstPercent.toFixed(1)}%)  ·  Abstain **${track.tally.weightedAbstain}** (${track.tally.abstainPercent.toFixed(1)}%)\nParticipation **${track.tally.participation.toFixed(1)}%**`
             : `\nParticipation **${track.tally.participation.toFixed(1)}%** *(anonymous vote - breakdown not disclosed)*`;
         }
         embed.addFields({ name: `${track.label.toUpperCase()} — VOTE RESULT`, value, inline: false });
@@ -207,6 +207,10 @@ function trackEmbed(resolution, body, track) {
   const weightedYes = yes.reduce((s, v) => s + v.weight, 0);
   const weightedNo = no.reduce((s, v) => s + v.weight, 0);
   const weightedAbstain = abstain.reduce((s, v) => s + v.weight, 0);
+  const totalWeight = weightedYes + weightedNo + weightedAbstain;
+  const yesPercent = totalWeight > 0 ? ((weightedYes / totalWeight) * 100).toFixed(1) : '0.0';
+  const noPercent = totalWeight > 0 ? ((weightedNo / totalWeight) * 100).toFixed(1) : '0.0';
+  const abstainPercent = totalWeight > 0 ? ((weightedAbstain / totalWeight) * 100).toFixed(1) : '0.0';
 
   const votesCast = ballots.length;
   const participation = track.eligibleCount > 0 ? ((votesCast / track.eligibleCount) * 100).toFixed(1) : '0.0';
@@ -235,9 +239,9 @@ function trackEmbed(resolution, body, track) {
 
   if (showBreakdown) {
     embed.addFields(
-      { name: '✅ YES', value: `${rawYes} raw  ·  **${weightedYes}** weighted`, inline: false },
-      { name: '❌ NO', value: `${rawNo} raw  ·  **${weightedNo}** weighted`, inline: false },
-      { name: '⚪ ABSTAIN', value: `${rawAbstain} raw  ·  **${weightedAbstain}** weighted`, inline: false }
+      { name: '✅ YES', value: `${rawYes} raw  ·  **${weightedYes}** weighted  ·  **${yesPercent}%**`, inline: false },
+      { name: '❌ NO', value: `${rawNo} raw  ·  **${weightedNo}** weighted  ·  **${noPercent}%**`, inline: false },
+      { name: '⚪ ABSTAIN', value: `${rawAbstain} raw  ·  **${weightedAbstain}** weighted  ·  **${abstainPercent}%**`, inline: false }
     );
   } else {
     embed.addFields({
@@ -267,6 +271,10 @@ function amendmentEmbed(resolution, amendment) {
   const weightedYes = yes.reduce((s, v) => s + v.weight, 0);
   const weightedNo = no.reduce((s, v) => s + v.weight, 0);
   const weightedAbstain = abstain.reduce((s, v) => s + v.weight, 0);
+  const totalWeight = weightedYes + weightedNo + weightedAbstain;
+  const yesPercent = totalWeight > 0 ? ((weightedYes / totalWeight) * 100).toFixed(1) : '0.0';
+  const noPercent = totalWeight > 0 ? ((weightedNo / totalWeight) * 100).toFixed(1) : '0.0';
+  const abstainPercent = totalWeight > 0 ? ((weightedAbstain / totalWeight) * 100).toFixed(1) : '0.0';
   const votesCast = ballots.length;
   const eligibleCount = vote ? vote.eligibleCount : 0;
   const participation = eligibleCount > 0 ? ((votesCast / eligibleCount) * 100).toFixed(1) : '0.0';
@@ -297,9 +305,9 @@ function amendmentEmbed(resolution, amendment) {
     );
     if (showBreakdown) {
       embed.addFields(
-        { name: '✅ YES', value: `**${weightedYes}** weighted`, inline: true },
-        { name: '❌ NO', value: `**${weightedNo}** weighted`, inline: true },
-        { name: '⚪ ABSTAIN', value: `**${weightedAbstain}** weighted`, inline: true }
+        { name: '✅ YES', value: `**${weightedYes}** weighted (**${yesPercent}%**)`, inline: true },
+        { name: '❌ NO', value: `**${weightedNo}** weighted (**${noPercent}%**)`, inline: true },
+        { name: '⚪ ABSTAIN', value: `**${weightedAbstain}** weighted (**${abstainPercent}%**)`, inline: true }
       );
     }
   }

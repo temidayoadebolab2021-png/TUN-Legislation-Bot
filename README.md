@@ -173,6 +173,5 @@ fill out the pop-up form, and the whole pipeline takes over automatically.
 | Admin | `/vote start` / `/vote close` | Manually control voting |
 | Anyone | `/resolution view` / `/resolution list` | Look up resolutions |
 
-
 If anything errors, check the terminal (or Railway logs) — the message there
 will usually tell you exactly what's wrong (e.g. a missing channel ID).

@@ -16,16 +16,21 @@ const { upsertResolution, findTemplate } = require('./resolutions');
 const { trackEmbed, resolutionEmbed } = require('./embeds');
 const { logAudit, notify, dmUser } = require('./audit');
 const { getMentionPrefix } = require('./mentions');
+const { effectiveSettings } = require('./subcategories');
 
 function bodiesFor(resolution) {
   return resolution.body === 'Both' ? ['GA', 'SC'] : [resolution.body || 'GA'];
 }
 
 // Everything about HOW a given body votes: which role counts, which channel
-// it posts to, and what quorum/majority rule applies.
-function getTrackSettings(body, config, template) {
+// it posts to, and what quorum/majority rule applies. `vetoableOverride`
+// lets a sub-category's own vetoable setting win over the template's -
+// pass undefined to just use the template's setting (e.g. for OVERRIDE
+// votes, which are never vetoable regardless).
+function getTrackSettings(body, config, template, vetoableOverride) {
   if (body === 'SC') {
     const sc = config.securityCouncil;
+    const vetoable = vetoableOverride === undefined ? template.vetoable !== false : vetoableOverride;
     return {
       label: 'Security Council',
       roleId: sc.roles.member,
@@ -34,7 +39,7 @@ function getTrackSettings(body, config, template) {
       thresholdPercent: template.requiresSupermajority ? sc.supermajorityPercent : sc.majorityPercent,
       requiresSupermajority: !!template.requiresSupermajority,
       votingDurationMinutes: sc.votingDurationMinutes,
-      vetoEnabled: !!(sc.veto.enabled && template.vetoable !== false),
+      vetoEnabled: !!(sc.veto.enabled && vetoable),
     };
   }
   if (body === 'OVERRIDE') {
@@ -280,7 +285,12 @@ async function refreshTrackMessage(client, resolution, body) {
 async function openTrackVote(client, resolution, body) {
   const config = getConfig();
   const template = findTemplate(resolution.templateName) || {};
-  const settings = getTrackSettings(body, config, template);
+  // A sub-category can override its template's vetoable setting - the
+  // resolution itself already stored the effective value at creation time
+  // (see index.js), so prefer that over re-deriving it from the template
+  // alone, which wouldn't know which sub-category this resolution used.
+  const vetoableOverride = resolution.vetoable !== undefined ? resolution.vetoable : effectiveSettings(template, resolution.subcategory).vetoable;
+  const settings = getTrackSettings(body, config, template, vetoableOverride);
   const eligibleCount = await getEligibleCount(client, settings.roleId);
 
   const track = {
@@ -349,8 +359,30 @@ function tallyTrack(track) {
   const weightedNo = ballots.filter((v) => v.choice === 'no').reduce((s, v) => s + v.weight, 0);
   const weightedAbstain = ballots.filter((v) => v.choice === 'abstain').reduce((s, v) => s + v.weight, 0);
   const decisive = weightedYes + weightedNo;
+  // Share of DECISIVE (Yes+No) votes - what the majority/supermajority
+  // threshold is actually measured against.
   const yesShare = decisive > 0 ? (weightedYes / decisive) * 100 : 0;
-  return { votesCast, participation, weightedYes, weightedNo, weightedAbstain, yesShare };
+
+  // Share of ALL votes cast, including Abstain - i.e. "what percentage of
+  // the room voted For / Against / Abstained", which is what people
+  // actually want to see on a results card. These three always sum to 100%
+  // (barring rounding) whenever at least one vote was cast.
+  const totalWeight = weightedYes + weightedNo + weightedAbstain;
+  const forPercent = totalWeight > 0 ? (weightedYes / totalWeight) * 100 : 0;
+  const againstPercent = totalWeight > 0 ? (weightedNo / totalWeight) * 100 : 0;
+  const abstainPercent = totalWeight > 0 ? (weightedAbstain / totalWeight) * 100 : 0;
+
+  return {
+    votesCast,
+    participation,
+    weightedYes,
+    weightedNo,
+    weightedAbstain,
+    yesShare,
+    forPercent,
+    againstPercent,
+    abstainPercent,
+  };
 }
 
 async function closeTrackVote(client, resolution, body) {

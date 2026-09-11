@@ -38,6 +38,7 @@ const { renderHelpPage } = require('./lib/help');
 const { renderConfigView } = require('./lib/configView');
 const { findElection, getAllElections } = require('./lib/electionsData');
 const { isEligibleElectionVoter, castBallot, refreshElectionMessage } = require('./lib/elections');
+const { effectiveSettings } = require('./lib/subcategories');
 
 // Make sure /data and every JSON file inside it exist before anything else
 // runs. This matters most on hosts like Railway, where a freshly mounted
@@ -81,18 +82,35 @@ function canUseTemplate(member, template, config) {
   return true;
 }
 
+// Same idea as canUseTemplate(), but also accounts for a sub-category's own
+// overrides (role restriction and/or GA/SC/Both) - a sub-category can be
+// more restrictive than its template (e.g. a "Sanctions" sub-category that's
+// SC-only under an otherwise GA-wide template), so this always needs to be
+// re-checked once a specific sub-category is known, not just the template.
+function canUseSubcategory(member, template, subcategoryName, config) {
+  if (!canUseTemplate(member, template, config)) return false;
+  if (!subcategoryName) return true;
+  const settings = effectiveSettings(template, subcategoryName);
+  if (settings.allowedRole && !member.roles.cache.has(settings.allowedRole)) return false;
+  if ((settings.body === 'SC' || settings.body === 'Both') && !isSCMember(member, config)) return false;
+  return true;
+}
+
 // Builds the pop-up form for a template. If a subcategory was chosen, it's
 // baked into the modal's customId (double-colon-separated, both parts
-// URI-encoded) so we know it again once the member submits the form.
+// URI-encoded) so we know it again once the member submits the form. Fields
+// come from the sub-category's own field list if it has one, otherwise the
+// template's - see lib/subcategories.js.
 function buildResolutionModal(templateName, template, subcategory) {
+  const fields = effectiveSettings(template, subcategory).fields;
   const modal = new ModalBuilder()
     .setCustomId(`propose_modal_${encodeURIComponent(templateName)}::${encodeURIComponent(subcategory || '')}`)
     .setTitle((subcategory ? `${templateName} — ${subcategory}` : templateName).slice(0, 45));
 
-  for (let i = 0; i < template.fields.length; i++) {
+  for (let i = 0; i < fields.length; i++) {
     const input = new TextInputBuilder()
       .setCustomId(`field_${i}`)
-      .setLabel(template.fields[i].slice(0, 45))
+      .setLabel(fields[i].slice(0, 45))
       .setStyle(TextInputStyle.Paragraph)
       .setRequired(true);
     modal.addComponents(new ActionRowBuilder().addComponents(input));
@@ -172,6 +190,16 @@ client.on('interactionCreate', async (interaction) => {
           .catch(() => {});
       }
 
+      if (cmd === 'template' && focused.name === 'subcategory') {
+        const templateName = interaction.options.getString('name');
+        const template = templateName ? findTemplate(templateName) : null;
+        const query = focused.value.toLowerCase();
+        const subcategories = template ? (template.subcategories || []).filter((s) => s.name.toLowerCase().includes(query)) : [];
+        return interaction
+          .respond(subcategories.slice(0, 25).map((s) => ({ name: s.name.slice(0, 100), value: s.name })))
+          .catch(() => {});
+      }
+
       if (cmd === 'election') {
         const query = focused.value.toLowerCase();
 
@@ -183,11 +211,19 @@ client.on('interactionCreate', async (interaction) => {
           if (sub === 'approve' || sub === 'reject') candidates = candidates.filter((c) => c.status === 'Pending');
           else if (sub === 'withdraw') candidates = candidates.filter((c) => c.status === 'Pending' || c.status === 'Approved');
           else if (sub === 'declare-winner') candidates = candidates.filter((c) => election.tieCandidateIds && election.tieCandidateIds.includes(c.id));
+          else if (sub === 'known-as') candidates = candidates.filter((c) => c.status === 'Pending' || c.status === 'Approved');
 
-          candidates = candidates.filter((c) => c.id.toLowerCase().includes(query) || (c.tag || c.label || '').toLowerCase().includes(query));
+          candidates = candidates.filter(
+            (c) => c.id.toLowerCase().includes(query) || (c.tag || c.label || '').toLowerCase().includes(query) || (c.knownAs || '').toLowerCase().includes(query)
+          );
 
           return interaction
-            .respond(candidates.slice(0, 25).map((c) => ({ name: `${c.id} — ${c.tag || c.label} (${c.status})`.slice(0, 100), value: c.id })))
+            .respond(
+              candidates.slice(0, 25).map((c) => ({
+                name: `${c.id} — ${c.tag || c.label}${c.knownAs ? ` (known as ${c.knownAs})` : ''} (${c.status})`.slice(0, 100),
+                value: c.id,
+              }))
+            )
             .catch(() => {});
         }
 
@@ -292,10 +328,31 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       if (template.subcategories && template.subcategories.length > 0) {
+        const config = getConfig();
+        // A sub-category can be more restrictive than its template (its own
+        // role and/or GA/SC/Both override) - only offer the ones this
+        // member is actually eligible for, rather than letting them pick
+        // one just to be rejected on the next step.
+        const usableSubcategories = template.subcategories.filter((s) => canUseSubcategory(interaction.member, template, s.name, config));
+
+        if (usableSubcategories.length === 0) {
+          return interaction.update({ content: `❌ There are no sub-categories of **${templateName}** available to you right now.`, components: [] });
+        }
+
         const menu = new StringSelectMenuBuilder()
           .setCustomId(`propose_select_subcategory_${encodeURIComponent(templateName)}`)
           .setPlaceholder('Choose a sub-category...')
-          .addOptions(template.subcategories.slice(0, 25).map((s) => ({ label: s.slice(0, 100), value: s })));
+          .addOptions(
+            usableSubcategories.slice(0, 25).map((s) => {
+              const settings = effectiveSettings(template, s.name);
+              const tag = settings.body !== (template.body || 'GA') ? (settings.body === 'SC' ? '🔒 Security Council' : settings.body === 'Both' ? '🔒 GA + SC' : null) : null;
+              return {
+                label: (tag ? `${s.name} — ${tag}` : s.name).slice(0, 100),
+                value: s.name,
+                description: s.fields ? `Own fields: ${s.fields.join(', ')}`.slice(0, 100) : undefined,
+              };
+            })
+          );
 
         return interaction.update({
           content: `Select the sub-category for **${templateName}**:`,
@@ -314,8 +371,8 @@ client.on('interactionCreate', async (interaction) => {
       if (!template || !template.enabled) {
         return interaction.update({ content: '❌ That template is no longer available.', components: [] });
       }
-      if (!canUseTemplate(interaction.member, template, getConfig())) {
-        return interaction.update({ content: '❌ You are no longer eligible to use this template.', components: [] });
+      if (!canUseSubcategory(interaction.member, template, subcategory, getConfig())) {
+        return interaction.update({ content: '❌ You are no longer eligible to use this sub-category.', components: [] });
       }
 
       return interaction.showModal(buildResolutionModal(templateName, template, subcategory));
@@ -334,8 +391,8 @@ client.on('interactionCreate', async (interaction) => {
 
       const config = getConfig();
 
-      if (!canUseTemplate(interaction.member, template, config)) {
-        return interaction.reply({ content: '❌ You are not eligible to use this template.', ephemeral: true });
+      if (!canUseSubcategory(interaction.member, template, subcategory, config)) {
+        return interaction.reply({ content: '❌ You are not eligible to use this template/sub-category.', ephemeral: true });
       }
 
       const limit = config.maxActiveResolutionsPerMember;
@@ -350,8 +407,13 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
+      // A sub-category can have its own field list, and its own body/vetoable
+      // overrides - resolve all of that once here, and use it for
+      // everything below, instead of assuming the template's own settings.
+      const effective = effectiveSettings(template, subcategory);
+
       const fields = {};
-      template.fields.forEach((fieldName, i) => {
+      effective.fields.forEach((fieldName, i) => {
         fields[fieldName] = interaction.fields.getTextInputValue(`field_${i}`);
       });
 
@@ -361,7 +423,7 @@ client.on('interactionCreate', async (interaction) => {
       const sponsors = [interaction.user.id];
       const resolution = {
         number,
-        title: `${templateName}${subcategory ? ` — ${subcategory}` : ''} — ${fields[template.fields[0]]}`.slice(0, 200),
+        title: `${templateName}${subcategory ? ` — ${subcategory}` : ''} — ${fields[effective.fields[0]]}`.slice(0, 200),
         templateName,
         subcategory,
         fields,
@@ -370,8 +432,8 @@ client.on('interactionCreate', async (interaction) => {
         submittedBy: interaction.user.id,
         submittedByTag: interaction.user.tag,
         createdAt: Date.now(),
-        body: template.body || 'GA',
-        vetoable: template.vetoable !== false,
+        body: effective.body,
+        vetoable: effective.vetoable,
       };
 
       upsertResolution(resolution);
@@ -487,10 +549,14 @@ client.on('interactionCreate', async (interaction) => {
 
       const wasReturnedForRevision = resolution.status === 'Returned for Revision';
 
-      template.fields.forEach((fieldName, i) => {
+      // Use whichever field list actually applies to this resolution's
+      // sub-category (it may have its own, distinct from the template's) -
+      // this has to match what /resolution edit used to build the form.
+      const editFields = effectiveSettings(template, resolution.subcategory).fields;
+      editFields.forEach((fieldName, i) => {
         resolution.fields[fieldName] = interaction.fields.getTextInputValue(`field_${i}`);
       });
-      resolution.title = `${resolution.templateName}${resolution.subcategory ? ` — ${resolution.subcategory}` : ''} — ${resolution.fields[template.fields[0]]}`.slice(0, 200);
+      resolution.title = `${resolution.templateName}${resolution.subcategory ? ` — ${resolution.subcategory}` : ''} — ${resolution.fields[editFields[0]]}`.slice(0, 200);
 
       // Editing after a revision request sends it straight back to review
       // (its sponsors already met the threshold before revision was

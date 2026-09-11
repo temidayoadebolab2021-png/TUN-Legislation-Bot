@@ -3,6 +3,7 @@
 // and templates (data/templates.json).
 
 const { readJSON, writeJSON } = require('./storage');
+const { normalizeSubcategories } = require('./subcategories');
 
 // A resolution counts as "active" (still in progress, not yet finished)
 // if its status is one of these. Used to enforce "max active resolutions
@@ -77,8 +78,15 @@ function clearAllResolutions(resolutionPrefix) {
   writeJSON('counters.json', counters);
 }
 
+// Normalizes every template's sub-categories on the way out (upgrading any
+// old plain-string entries) so every consumer of this function always gets
+// the same shape, regardless of what's actually on disk. See subcategories.js.
 function getAllTemplates() {
-  return readJSON('templates.json', []) || [];
+  const templates = readJSON('templates.json', []) || [];
+  for (const t of templates) {
+    if (t.subcategories) t.subcategories = normalizeSubcategories(t.subcategories);
+  }
+  return templates;
 }
 
 function saveAllTemplates(list) {

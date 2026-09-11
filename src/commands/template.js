@@ -15,6 +15,24 @@ const { getConfig } = require('../lib/config');
 const { isAdmin } = require('../lib/permissions');
 const { getAllTemplates, saveAllTemplates, findTemplate, getAllResolutions, saveAllResolutions, ACTIVE_STATUSES } = require('../lib/resolutions');
 const { logAudit } = require('../lib/audit');
+const { findSubcategory, effectiveSettings } = require('../lib/subcategories');
+
+const SUBCATEGORY_BODY_CHOICES = [
+  { name: 'General Assembly only', value: 'GA' },
+  { name: 'Security Council only', value: 'SC' },
+  { name: 'Both (GA and SC must both approve)', value: 'Both' },
+];
+
+// Renders one sub-category's override summary for /template list - only
+// mentions settings it actually overrides, since most won't override anything.
+function describeSubcategoryOverrides(sub) {
+  const parts = [];
+  if (sub.allowedRole) parts.push(`restricted to <@&${sub.allowedRole}>`);
+  if (sub.body) parts.push(`body: ${sub.body}${sub.body !== 'GA' ? ` (vetoable: ${sub.vetoable !== false})` : ''}`);
+  else if (sub.vetoable !== null) parts.push(`vetoable: ${sub.vetoable}`);
+  if (sub.fields) parts.push(`own fields: ${sub.fields.join(', ')}`);
+  return parts.length ? ` _(${parts.join('; ')})_` : '';
+}
 
 module.exports = {
   category: 'Administration',
@@ -61,7 +79,10 @@ module.exports = {
         .addStringOption((o) => o.setName('new_name').setDescription('Rename the template').setRequired(false))
         .addStringOption((o) => o.setName('fields').setDescription('Replace the entire field list (comma-separated, max 5)').setRequired(false))
         .addStringOption((o) =>
-          o.setName('subcategories').setDescription('Replace the entire sub-category list (comma-separated). Type "none" to clear them all.').setRequired(false)
+          o
+            .setName('subcategories')
+            .setDescription('Replace the whole list (comma-separated) - wipes per-sub-category overrides. Type "none" to clear.')
+            .setRequired(false)
         )
         .addBooleanOption((o) => o.setName('supermajority').setDescription('Require supermajority instead of simple majority?').setRequired(false))
         .addRoleOption((o) => o.setName('restrict_to_role').setDescription('Only members with this role may use this template').setRequired(false))
@@ -99,16 +120,39 @@ module.exports = {
     .addSubcommand((sub) =>
       sub
         .setName('add-subcategory')
-        .setDescription('Add a sub-category to an existing template')
-        .addStringOption((o) => o.setName('name').setDescription('Template name').setRequired(true))
+        .setDescription('Add a sub-category, optionally overriding the template\'s own rules for it')
+        .addStringOption((o) => o.setName('name').setDescription('Template name').setRequired(true).setAutocomplete(true))
         .addStringOption((o) => o.setName('subcategory').setDescription('Sub-category to add, e.g. Tax Changes').setRequired(true))
+        .addStringOption((o) =>
+          o
+            .setName('fields')
+            .setDescription("Its own comma-separated fields (max 5). Blank = use the template's fields.")
+            .setRequired(false)
+        )
+        .addRoleOption((o) => o.setName('restrict_to_role').setDescription("Only this role may use it (overrides the template's own restriction)").setRequired(false))
+        .addStringOption((o) => o.setName('body').setDescription("Which body votes on it. Blank = inherit the template's.").setRequired(false).addChoices(...SUBCATEGORY_BODY_CHOICES))
+        .addBooleanOption((o) => o.setName('vetoable').setDescription("Is it vetoable? Blank = inherit the template's.").setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('edit-subcategory')
+        .setDescription('Change a sub-category\'s own overrides (role/body/vetoable/fields)')
+        .addStringOption((o) => o.setName('name').setDescription('Template name').setRequired(true).setAutocomplete(true))
+        .addStringOption((o) => o.setName('subcategory').setDescription('Sub-category to edit').setRequired(true).setAutocomplete(true))
+        .addStringOption((o) => o.setName('new_name').setDescription('Rename this sub-category').setRequired(false))
+        .addStringOption((o) => o.setName('fields').setDescription('Its own fields (comma-separated, max 5). "inherit" = use the template\'s.').setRequired(false))
+        .addRoleOption((o) => o.setName('restrict_to_role').setDescription("Restrict it to a role (overrides the template's own restriction)").setRequired(false))
+        .addBooleanOption((o) => o.setName('clear_role_restriction').setDescription("True = remove its own role restriction (falls back to the template's)").setRequired(false))
+        .addStringOption((o) => o.setName('body').setDescription('Override which body votes on it').setRequired(false).addChoices(...SUBCATEGORY_BODY_CHOICES, { name: 'Inherit from template', value: 'inherit' }))
+        .addBooleanOption((o) => o.setName('vetoable').setDescription('Override whether it is vetoable').setRequired(false))
+        .addBooleanOption((o) => o.setName('clear_vetoable_override').setDescription("True = remove its own vetoable override (falls back to the template's)").setRequired(false))
     )
     .addSubcommand((sub) =>
       sub
         .setName('remove-subcategory')
         .setDescription('Remove a sub-category from a template')
-        .addStringOption((o) => o.setName('name').setDescription('Template name').setRequired(true))
-        .addStringOption((o) => o.setName('subcategory').setDescription('Sub-category to remove').setRequired(true))
+        .addStringOption((o) => o.setName('name').setDescription('Template name').setRequired(true).setAutocomplete(true))
+        .addStringOption((o) => o.setName('subcategory').setDescription('Sub-category to remove').setRequired(true).setAutocomplete(true))
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
@@ -286,9 +330,14 @@ module.exports = {
       // fields per embed) than a single message's content (2000 chars
       // total), so this can't blow past Discord's limit as the list grows.
       const fields = templates.map((t) => {
+        const subcategoryLines =
+          t.subcategories && t.subcategories.length
+            ? `Sub-categories:\n${t.subcategories.map((s) => `  • ${s.name}${describeSubcategoryOverrides(s)}`).join('\n')}`
+            : null;
+
         const details = [
           `Fields: ${t.fields.join(', ')}`,
-          t.subcategories && t.subcategories.length ? `Sub-categories: ${t.subcategories.join(', ')}` : null,
+          subcategoryLines,
           t.requiresSupermajority ? 'Requires supermajority' : null,
           t.allowedRole ? `Restricted to <@&${t.allowedRole}>` : null,
           `Body: ${t.body || 'GA'}${(t.body || 'GA') !== 'GA' ? ` (vetoable: ${t.vetoable !== false})` : ''}`,
@@ -365,16 +414,137 @@ module.exports = {
       if (!t) return interaction.reply({ content: `❌ No template named **${name}**.`, ephemeral: true });
 
       t.subcategories = t.subcategories || [];
-      if (t.subcategories.includes(subcategory)) {
+      if (findSubcategory(t, subcategory)) {
         return interaction.reply({ content: `**${subcategory}** is already a sub-category of **${name}**.`, ephemeral: true });
       }
       if (t.subcategories.length >= 25) {
         return interaction.reply({ content: '❌ A template can have at most 25 sub-categories (a Discord dropdown limit).', ephemeral: true });
       }
 
-      t.subcategories.push(subcategory);
+      const fieldsRaw = interaction.options.getString('fields');
+      let fields = null;
+      if (fieldsRaw) {
+        fields = fieldsRaw.split(',').map((f) => f.trim()).filter(Boolean);
+        if (fields.length === 0 || fields.length > 5) {
+          return interaction.reply({ content: '❌ A sub-category can have between 1 and 5 of its own fields, separated by commas.', ephemeral: true });
+        }
+      }
+      const restrictRole = interaction.options.getRole('restrict_to_role');
+      const body = interaction.options.getString('body');
+      const vetoable = interaction.options.getBoolean('vetoable');
+
+      const entry = {
+        name: subcategory,
+        allowedRole: restrictRole ? restrictRole.id : null,
+        body: body || null,
+        vetoable: vetoable === null ? null : vetoable,
+        fields,
+      };
+      t.subcategories.push(entry);
       saveAllTemplates(templates);
-      return interaction.reply({ content: `✅ Added sub-category **${subcategory}** to **${name}**. Current: ${t.subcategories.join(', ')}`, ephemeral: true });
+
+      logAudit(interaction.client, 'Sub-category Added', `**${subcategory}** added to **${t.name}** by ${interaction.user.tag}.${describeSubcategoryOverrides(entry)}`).catch((err) => console.error(err));
+
+      return interaction.reply({
+        content: `✅ Added sub-category **${subcategory}** to **${name}**.${describeSubcategoryOverrides(entry)}\nCurrent: ${t.subcategories.map((s) => s.name).join(', ')}`,
+        ephemeral: true,
+      });
+    }
+
+    if (sub === 'edit-subcategory') {
+      const name = interaction.options.getString('name');
+      const subcategoryName = interaction.options.getString('subcategory').trim();
+      const templates = getAllTemplates();
+      const t = templates.find((x) => x.name.toLowerCase() === name.toLowerCase());
+      if (!t) return interaction.reply({ content: `❌ No template named **${name}**.`, ephemeral: true });
+
+      t.subcategories = t.subcategories || [];
+      const sc = t.subcategories.find((s) => s.name.toLowerCase() === subcategoryName.toLowerCase());
+      if (!sc) return interaction.reply({ content: `❌ **${subcategoryName}** is not currently a sub-category of **${name}**.`, ephemeral: true });
+
+      const changes = [];
+
+      const newName = interaction.options.getString('new_name');
+      if (newName && newName.trim() && newName.trim().toLowerCase() !== sc.name.toLowerCase()) {
+        if (t.subcategories.some((s) => s !== sc && s.name.toLowerCase() === newName.trim().toLowerCase())) {
+          return interaction.reply({ content: `❌ **${name}** already has a sub-category named **${newName.trim()}**.`, ephemeral: true });
+        }
+        const oldName = sc.name;
+        sc.name = newName.trim();
+        changes.push(`name → **${sc.name}**`);
+
+        // Same reasoning as renaming a template (see 'edit' above): any
+        // in-progress resolution filed under the old sub-category name has
+        // to follow the rename, or it would silently lose its rules/fields.
+        const resolutions = getAllResolutions();
+        let relinked = 0;
+        for (const r of resolutions) {
+          if (r.templateName === t.name && r.subcategory === oldName && ACTIVE_STATUSES.includes(r.status)) {
+            r.subcategory = sc.name;
+            relinked += 1;
+          }
+        }
+        if (relinked > 0) {
+          saveAllResolutions(resolutions);
+          changes.push(`${relinked} in-progress resolution(s) relinked to the new name`);
+        }
+      }
+
+      const fieldsRaw = interaction.options.getString('fields');
+      if (fieldsRaw !== null) {
+        if (fieldsRaw.trim().toLowerCase() === 'inherit' || fieldsRaw.trim() === '') {
+          sc.fields = null;
+          changes.push("own fields → cleared (now inherits the template's)");
+        } else {
+          const fields = fieldsRaw.split(',').map((f) => f.trim()).filter(Boolean);
+          if (fields.length === 0 || fields.length > 5) {
+            return interaction.reply({ content: '❌ A sub-category can have between 1 and 5 of its own fields, separated by commas.', ephemeral: true });
+          }
+          sc.fields = fields;
+          changes.push(`own fields → ${fields.join(', ')}`);
+        }
+      }
+
+      const clearRole = interaction.options.getBoolean('clear_role_restriction');
+      const restrictRole = interaction.options.getRole('restrict_to_role');
+      if (clearRole) {
+        sc.allowedRole = null;
+        changes.push("own role restriction → cleared (now inherits the template's)");
+      } else if (restrictRole) {
+        sc.allowedRole = restrictRole.id;
+        changes.push(`own role restriction → <@&${restrictRole.id}>`);
+      }
+
+      const body = interaction.options.getString('body');
+      if (body === 'inherit') {
+        sc.body = null;
+        changes.push("own body → cleared (now inherits the template's)");
+      } else if (body) {
+        sc.body = body;
+        changes.push(`own body → ${body}`);
+      }
+
+      const clearVetoable = interaction.options.getBoolean('clear_vetoable_override');
+      const vetoable = interaction.options.getBoolean('vetoable');
+      if (clearVetoable) {
+        sc.vetoable = null;
+        changes.push("own vetoable override → cleared (now inherits the template's)");
+      } else if (vetoable !== null) {
+        sc.vetoable = vetoable;
+        changes.push(`own vetoable → ${vetoable}`);
+      }
+
+      if (changes.length === 0) {
+        return interaction.reply({ content: '❌ You must provide at least one thing to change.', ephemeral: true });
+      }
+
+      saveAllTemplates(templates);
+      logAudit(interaction.client, 'Sub-category Edited', `**${t.name} → ${sc.name}** edited by ${interaction.user.tag}:\n${changes.join('\n')}`).catch((err) => console.error(err));
+
+      return interaction.reply({
+        content: `✅ Sub-category **${sc.name}** of **${t.name}** updated:\n${changes.map((c) => `• ${c}`).join('\n')}`,
+        ephemeral: true,
+      });
     }
 
     if (sub === 'remove-subcategory') {
@@ -385,14 +555,14 @@ module.exports = {
       if (!t) return interaction.reply({ content: `❌ No template named **${name}**.`, ephemeral: true });
 
       t.subcategories = t.subcategories || [];
-      if (!t.subcategories.includes(subcategory)) {
+      if (!findSubcategory(t, subcategory)) {
         return interaction.reply({ content: `**${subcategory}** is not currently a sub-category of **${name}**.`, ephemeral: true });
       }
 
-      t.subcategories = t.subcategories.filter((s) => s !== subcategory);
+      t.subcategories = t.subcategories.filter((s) => s.name.toLowerCase() !== subcategory.toLowerCase());
       saveAllTemplates(templates);
       return interaction.reply({
-        content: `✅ Removed sub-category **${subcategory}** from **${name}**. ${t.subcategories.length ? `Remaining: ${t.subcategories.join(', ')}` : 'No sub-categories remain.'}`,
+        content: `✅ Removed sub-category **${subcategory}** from **${name}**. ${t.subcategories.length ? `Remaining: ${t.subcategories.map((s) => s.name).join(', ')}` : 'No sub-categories remain.'}`,
         ephemeral: true,
       });
     }

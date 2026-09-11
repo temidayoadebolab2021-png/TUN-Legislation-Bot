@@ -9,6 +9,7 @@ const { isAdmin } = require('../lib/permissions');
 const { getAllResolutions, findResolution, findTemplate, upsertResolution, deleteResolution, clearAllResolutions, EDITABLE_STATUSES, SELF_DELETABLE_STATUSES } = require('../lib/resolutions');
 const { resolutionEmbed } = require('../lib/embeds');
 const { logAudit } = require('../lib/audit');
+const { effectiveSettings } = require('../lib/subcategories');
 
 module.exports = {
   category: 'Legislation',
@@ -136,12 +137,16 @@ module.exports = {
         return interaction.reply({ content: '❌ The template this resolution was created from no longer exists, so it can\'t be edited through this form. Ask an admin to help directly.', ephemeral: true });
       }
 
+      // This resolution's sub-category may have its own field list, distinct
+      // from the template's - use whichever actually applies.
+      const editFields = effectiveSettings(template, resolution.subcategory).fields;
+
       const modal = new ModalBuilder()
         .setCustomId(`resedit_modal_${encodeURIComponent(resolution.number)}`)
         .setTitle(`Edit ${resolution.number}`.slice(0, 45));
 
-      for (let i = 0; i < template.fields.length; i++) {
-        const fieldName = template.fields[i];
+      for (let i = 0; i < editFields.length; i++) {
+        const fieldName = editFields[i];
         const input = new TextInputBuilder()
           .setCustomId(`field_${i}`)
           .setLabel(fieldName.slice(0, 45))

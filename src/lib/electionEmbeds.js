@@ -7,12 +7,26 @@
 const { EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const { DIVIDER, BLANK, STATUS_COLORS, STATUS_ICONS, quoteBlock } = require('./embeds');
 
+// Used wherever the FULL candidate list appears (the main election embed,
+// /election candidate list, DMs, etc.) - these places render real Discord
+// markdown, so a candidate's @mention always pings live and is always shown
+// front and center. If the candidate also registered a "known as" name,
+// it's appended alongside the mention so members can match the name they
+// recognize from the ballot to the actual person being pinged.
 function candidateLabel(candidate) {
-  return candidate.userId ? `<@${candidate.userId}>` : candidate.label;
+  if (!candidate.userId) return candidate.label;
+  const mention = `<@${candidate.userId}>`;
+  return candidate.knownAs ? `${mention} — known as **${candidate.knownAs}**` : mention;
 }
 
+// Used ONLY for the voting dropdown (StringSelectMenu options), which
+// cannot render @mentions or any other markdown - it's plain text. A raw
+// Discord username/tag there is often not how anyone actually recognizes a
+// candidate, so this prefers whatever "known as" name the candidate
+// registered with, falling back to their username if they didn't set one.
 function candidateName(candidate) {
-  return candidate.userId ? candidate.tag || candidate.userId : candidate.label;
+  if (!candidate.userId) return candidate.label;
+  return candidate.knownAs || candidate.tag || candidate.userId;
 }
 
 // The main reference card for an election - phase, schedule, candidate
